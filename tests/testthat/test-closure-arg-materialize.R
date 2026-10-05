@@ -359,3 +359,115 @@ test_that("arguments forwarded to another local function count as used when it a
     fixed = TRUE
   )
 })
+
+test_that("an argument used by every alternative of a switch() value is always used", {
+  apply_op <- function(x, k) {
+    declare(type(x = double(NA)), type(k = integer(1)))
+    combine <- function(op, a, b) {
+      out <- switch(op, a + b, a - b, a * b)
+      out
+    }
+    combine(k, x[1L], x[2L])
+  }
+  expect_quick_identical(
+    apply_op,
+    list(c(6, 2), 1L),
+    list(c(6, 2), 2L),
+    list(c(6, 2), 3L)
+  )
+
+  # Each alternative calls a helper that uses its argument before its own
+  # side effect.
+  counted <- function(x, k) {
+    declare(type(x = double(NA)), type(k = integer(1)))
+    calls <- 0L
+    add <- function(a, b) {
+      r <- a + b
+      calls <<- calls + 1L
+      r
+    }
+    sub <- function(a, b) {
+      r <- a - b
+      calls <<- calls + 1L
+      r
+    }
+    run <- function(op, a, b) {
+      r <- switch(op, add(a, b), sub(a, b))
+      r
+    }
+    v <- run(k, x[1L], x[2L])
+    v + calls
+  }
+  expect_quick_identical(counted, list(c(6, 2), 1L), list(c(6, 2), 2L))
+
+  # One alternative that does not use the argument is enough to reject it.
+  not_every_alternative <- function(x, k) {
+    declare(type(x = double(NA)), type(k = integer(1)))
+    combine <- function(op, a, b) {
+      out <- switch(op, a + b, b * 2)
+      out
+    }
+    combine(k, x[1L], x[2L])
+  }
+  expect_error(
+    quick(not_every_alternative),
+    "`combine` does not always use `a`",
+    fixed = TRUE
+  )
+
+  # As a statement, an out-of-range index runs no alternative at all.
+  as_statement <- function(x, k) {
+    declare(type(x = double(NA)), type(k = integer(1)))
+    total <- 0
+    accumulate <- function(op, a) {
+      switch(op, total <<- total + a, total <<- total - a)
+      0L
+    }
+    accumulate(k, x[1L])
+    total
+  }
+  expect_error(
+    quick(as_statement),
+    "`accumulate` does not always use `a`",
+    fixed = TRUE
+  )
+})
+
+test_that("an argument used by both branches of if/else is always used", {
+  scaled <- function(x, mode) {
+    declare(type(x = double(NA)), type(mode = integer(1)))
+    pick <- function(a, m) {
+      out <- 0
+      if (m < 0L) {
+        out <- -a
+      } else {
+        out <- a * 2
+      }
+      out
+    }
+    pick(x[1L], mode)
+  }
+  expect_quick_identical(scaled, list(c(3, 1), -1L), list(c(3, 1), 1L))
+
+  # A side effect before the argument in one branch still rejects it.
+  effect_in_branch <- function(x, mode) {
+    declare(type(x = double(NA)), type(mode = integer(1)))
+    hits <- 0L
+    pick <- function(a, m) {
+      out <- 0
+      if (m < 0L) {
+        hits <<- hits + 1L
+        out <- -a
+      } else {
+        out <- a * 2
+      }
+      out
+    }
+    pick(x[1L], mode)
+  }
+  expect_error(
+    quick(effect_in_branch),
+    "`pick` does not always use `a` before other effects",
+    fixed = TRUE
+  )
+})

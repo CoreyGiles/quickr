@@ -102,6 +102,9 @@ closure_superassign_targets <- function(e, scope, seen = character()) {
 # side effects. An argument passed on to another local closure is a promise
 # there too: it counts as forced only if that closure always forces the
 # matching parameter (`seen` stops recursion through closures being walked).
+# When exactly one of several branches always runs -- if/else, or a
+# switch() whose value is used (an out-of-range index is then a runtime
+# error) -- a formal forced by every branch counts as forced.
 # Used by: check_closure_arg_promise()
 closure_forced_formals <- function(fun, scope, seen = character()) {
   formal_names <- names(formals(fun)) %||% character()
@@ -118,7 +121,34 @@ closure_forced_formals <- function(fun, scope, seen = character()) {
     }
   }
 
-  walk <- function(e) {
+  # Walk each branch from the current state, then keep only what every
+  # branch forced. Any branch reaching an effect or control flow stops the
+  # walk after the branches.
+  walk_branches <- function(branches, value) {
+    start_forced <- forced
+    start_dropped <- dropped
+    branch_forced <- list()
+    all_dropped <- dropped
+    any_stopped <- FALSE
+    for (branch in branches) {
+      forced <<- start_forced
+      dropped <<- start_dropped
+      stopped <<- FALSE
+      if (!identical(branch, quote(expr = ))) {
+        walk(branch, value = value)
+      }
+      branch_forced[[length(branch_forced) + 1L]] <- forced
+      all_dropped <- union(all_dropped, dropped)
+      any_stopped <- any_stopped || stopped
+    }
+    forced <<- union(start_forced, Reduce(intersect, branch_forced))
+    dropped <<- setdiff(all_dropped, forced)
+    stopped <<- any_stopped
+  }
+
+  # `value` is FALSE for statements (direct children of `{` and the body
+  # itself): a switch() used as a statement may run no alternative at all.
+  walk <- function(e, value = TRUE) {
     if (stopped) {
       return(invisible())
     }
@@ -156,6 +186,11 @@ closure_forced_formals <- function(fun, scope, seen = character()) {
     switch(
       op,
       `function` = invisible(),
+      `{` = {
+        for (i in seq_along(args)) {
+          walk(args[[i]], value = FALSE)
+        }
+      },
       `<-` = ,
       `=` = {
         # R evaluates the value before the target.
@@ -179,7 +214,15 @@ closure_forced_formals <- function(fun, scope, seen = character()) {
         }
         stopped <<- TRUE
       },
-      `if` = ,
+      `if` = {
+        walk(args[[1L]])
+        if (length(args) == 3L) {
+          # Exactly one of the two branches runs.
+          walk_branches(args[2:3], value = value)
+        } else {
+          stopped <<- TRUE
+        }
+      },
       `while` = ,
       `&&` = ,
       `||` = ,
@@ -193,12 +236,19 @@ closure_forced_formals <- function(fun, scope, seen = character()) {
         stopped <<- TRUE
       },
       `switch` = {
-        # Only EXPR is always evaluated; one alternative runs after it.
-        expr_index <- setdiff(seq_along(args), switch_alternative_indices(args))
+        # EXPR is always evaluated. As a value, exactly one alternative then
+        # runs (quickr raises an error for an out-of-range index); as a
+        # statement, an out-of-range index runs none.
+        alternatives <- switch_alternative_indices(args)
+        expr_index <- setdiff(seq_along(args), alternatives)
         if (length(expr_index)) {
           walk(args[[expr_index]])
         }
-        stopped <<- TRUE
+        if (isTRUE(value) && length(alternatives)) {
+          walk_branches(args[alternatives], value = TRUE)
+        } else {
+          stopped <<- TRUE
+        }
       },
       `repeat` = ,
       `break` = ,
@@ -218,7 +268,7 @@ closure_forced_formals <- function(fun, scope, seen = character()) {
     invisible()
   }
 
-  walk(body(fun))
+  walk(body(fun), value = FALSE)
   forced
 }
 
