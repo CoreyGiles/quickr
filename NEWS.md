@@ -5,7 +5,9 @@
   a `<<-` target (R evaluates `i` in `x[i] <<- v` before writing), and when
   it is passed on to another local function that always uses it. Previously
   calls such as `put(pos[k], x[k])` with `put <- function(i, v) out[i] <<- v`
-  were rejected.
+  were rejected. An argument also counts as used when both branches of an
+  `if`/`else` use it, or when every alternative of a `switch()` whose value
+  is used does (e.g. `out <- switch(op, a + b, a - b)`).
 
 * Numeric `switch()` is now supported and compiles to a Fortran
   `select case`, so large dispatch tables translate
